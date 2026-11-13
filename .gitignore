@@ -1,0 +1,11 @@
+# Raw Divvy trip data (~600 MB, one file over GitHub's 100 MB limit) — see README to download
+data/
+
+# Quarto / R intermediates
+/.quarto/
+*.knit.md
+.Rhistory
+.RData
+.Rproj.user/
+
+.DS_Store

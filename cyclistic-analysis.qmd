@@ -1,0 +1,193 @@
+---
+title: "Cyclistic Bike-Share Analysis"
+author: "Anushree Bhat"
+date: "2021-09-30"
+format:
+  html:
+    toc: true
+    code-fold: show
+    output-file: index.html
+execute:
+  warning: false
+  message: false
+---
+
+## Case study: how does a bike-share navigate speedy success?
+
+Cyclistic, a bike-share company in Chicago, wants to grow annual memberships, since its stakeholders believe the company's future depends on them. The goal is a marketing strategy that converts casual riders into annual members. This report looks at how the two groups use the bikes differently, using all of 2020's trip data.
+
+### Business task
+
+1. How do annual members and casual riders use Cyclistic bikes differently?
+2. Why would casual riders buy annual memberships?
+3. How can Cyclistic use digital media to influence casual riders to become members?
+
+This analysis answers question 1 with data and uses it to suggest directions for 2 and 3.
+
+### Data source
+
+Trip data comes from Motivate International Inc., which operates Chicago's Divvy bike-share service. The data is public [here](https://divvy-tripdata.s3.amazonaws.com/index.html) under this [license](https://www.divvybikes.com/data-license-agreement). Download the 2020 files (the Q1 file plus the April–December monthly files) into a `data/` folder next to this document.
+
+## Setup
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+## Loading the data
+
+All twelve files share the same columns, but `start_station_id` and `end_station_id` change type partway through the year, which makes `bind_rows()` fail. Reading every column as text first, then converting, avoids that.
+
+```{r}
+files <- c(
+  "data/Divvy_Trips_2020_Q1.csv",
+  sprintf("data/2020%02d-divvy-tripdata.csv", 4:12)
+)
+
+trips_raw <- files |>
+  map(\(f) read_csv(f, col_types = cols(.default = col_character()))) |>
+  bind_rows()
+
+glimpse(trips_raw)
+```
+
+## Cleaning
+
+```{r}
+trips <- trips_raw |>
+  mutate(
+    started_at  = ymd_hms(started_at),
+    ended_at    = ymd_hms(ended_at),
+    ride_min    = as.numeric(difftime(ended_at, started_at, units = "mins")),
+    month       = month(started_at, label = TRUE),
+    day_of_week = wday(started_at, label = TRUE, week_start = 1),
+    weekend     = day_of_week %in% c("Sat", "Sun")
+  )
+
+n_before <- nrow(trips)
+
+trips <- trips |>
+  filter(
+    !is.na(started_at), !is.na(ended_at), !is.na(member_casual),
+    ride_min > 1,                                         # under a minute: false start or redock
+    is.na(start_station_name) | start_station_name != "HQ QR"  # Divvy test/maintenance station
+  )
+
+n_after <- nrow(trips)
+```
+
+I removed `r format(n_before - n_after, big.mark = ",")` of `r format(n_before, big.mark = ",")` rows (`r round(100 * (n_before - n_after) / n_before, 1)`%): rides with missing timestamps or rider type, rides of one minute or less, and rides starting at Divvy's HQ test station. I kept rides with a missing station name, because those are mostly electric bikes parked away from a dock and dropping them would bias the sample.
+
+A few rides last for days, which looks like bikes that weren't docked properly. Instead of dropping them, I report medians alongside means so a handful of outliers don't drive the conclusions.
+
+```{r}
+trips |>
+  summarise(
+    max_hours   = max(ride_min) / 60,
+    p99_minutes = quantile(ride_min, 0.99),
+    median_min  = median(ride_min)
+  )
+```
+
+## How members and casual riders differ
+
+### How many rides each group takes
+
+```{r}
+rides_by_group <- trips |>
+  count(member_casual) |>
+  mutate(share = n / sum(n))
+
+rides_by_group
+```
+
+```{r}
+ggplot(rides_by_group, aes(member_casual, n, fill = member_casual)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c(casual = "#FF9912", member = "#03A89E")) +
+  labs(title = "Total rides in 2020", x = NULL, y = "Rides")
+```
+
+### When they ride
+
+```{r}
+by_day <- trips |>
+  count(member_casual, day_of_week)
+
+ggplot(by_day, aes(day_of_week, n, fill = member_casual)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c(casual = "#FF9912", member = "#03A89E")) +
+  labs(title = "Rides by day of week", x = NULL, y = "Rides", fill = NULL)
+```
+
+```{r}
+weekend_share <- trips |>
+  group_by(member_casual) |>
+  summarise(weekend_share = mean(weekend))
+
+weekend_share
+```
+
+```{r}
+by_month <- trips |>
+  count(member_casual, month)
+
+ggplot(by_month, aes(month, n, colour = member_casual, group = member_casual)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  scale_y_continuous(labels = scales::comma) +
+  scale_colour_manual(values = c(casual = "#FF9912", member = "#03A89E")) +
+  labs(title = "Rides per month", x = NULL, y = "Rides", colour = NULL)
+```
+
+### How long they ride
+
+```{r}
+duration_summary <- trips |>
+  group_by(member_casual) |>
+  summarise(
+    median_min = median(ride_min),
+    mean_min   = mean(ride_min),
+    total_hours = sum(ride_min) / 60
+  )
+
+duration_summary
+```
+
+```{r}
+ggplot(trips, aes(member_casual, ride_min, fill = member_casual)) +
+  geom_boxplot(outlier.shape = NA, show.legend = FALSE) +
+  coord_cartesian(ylim = c(0, 90)) +
+  scale_fill_manual(values = c(casual = "#FF9912", member = "#03A89E")) +
+  labs(title = "Ride length (outliers hidden, axis capped at 90 min)",
+       x = NULL, y = "Minutes")
+```
+
+## Findings
+
+```{r}
+#| include: false
+ws  <- deframe(weekend_share)
+med <- deframe(select(duration_summary, member_casual, median_min))
+pct <- \(x) paste0(round(100 * x), "%")
+```
+
+- **Weekends vs weekdays.** `r pct(ws["casual"])` of casual rides happen on weekends, compared with `r pct(ws["member"])` of member rides. Members ride through the work week; casual riders cluster on Saturdays and Sundays.
+- **Ride length.** The median casual ride is `r round(med["casual"])` minutes, against `r round(med["member"])` minutes for members. Casual riders use the bikes for longer, leisure-style trips; members make shorter, regular trips.
+- **Seasonality.** Both groups peak in summer, but the monthly chart shows how much more seasonal casual riding is.
+
+*(Check each line against the rendered numbers and charts before sharing.)*
+
+## Recommendations
+
+1. **Target casual riders where and when they already ride.** Run membership promotions on weekends and in late spring, before the summer peak, at the stations casual riders use most. A next step would be ranking start stations by casual share.
+2. **Sell the membership on cost per ride for long trips.** Casual riders take longer rides, so pricing that shows what a member would have saved on their own recent rides speaks directly to how they use the service.
+3. **Use digital channels for the weekend/leisure crowd.** App notifications and social ads timed for Friday afternoons and spring weekends, with a seasonal or weekend-focused membership tier to test against the standard annual plan.
+
+## Limitations
+
+- The data has no rider IDs, so I can't tell how many distinct people are behind the casual rides, or whether the same people ride repeatedly.
+- 2020 was heavily affected by COVID-19, so commuting patterns, and the gap between members and casual riders, may not carry over to normal years.
